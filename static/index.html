@@ -5,73 +5,107 @@
 <title>Ricerca sentenze - indice OpenGA</title>
 <style>
   body { font-family: sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
-  textarea { width: 100%; height: 60px; font-size: 15px; padding: 8px; }
+  textarea { width: 100%; font-size: 15px; padding: 8px; }
+  #q { height: 60px; }
   select, button { font: inherit; }
-  button { padding: 10px 20px; font-size: 15px; margin-top: 10px; cursor: pointer; }
+  button { padding: 9px 16px; font-size: 14px; margin-top: 8px; cursor: pointer; }
   #status { margin-top: 14px; color: #888; font-size: 14px; }
   .card { margin-top: 22px; padding: 16px 18px; border: 1px solid #ddd; border-radius: 8px; }
   .cite { font-weight: 700; font-size: 1.05rem; margin: 0 0 6px; }
-  .obj { color: #444; margin: 0 0 8px; }
-  .massima { white-space: pre-wrap; background: #f6f6f6; padding: 12px 14px; border-radius: 6px; margin-top: 10px; }
-  .massima strong { display: block; margin-top: 8px; }
+  .obj { color: #444; margin: 0 0 10px; }
+  .cerca-box { background: #f0f4f8; border-radius: 6px; padding: 10px 12px; font-size: .9rem; margin-bottom: 10px; }
+  .cerca-box b { font-variant-numeric: tabular-nums; }
+  a.link { display: inline-block; }
+  .massima-panel { margin-top: 10px; }
+  .massima-panel textarea { height: 120px; font-size: 13px; }
+  .massima-out { white-space: pre-wrap; background: #f6f6f6; padding: 12px 14px; border-radius: 6px; margin-top: 10px; }
+  .massima-out strong { display: block; margin-top: 8px; }
   .err { color: #a33; font-size: .9rem; }
-  a.link { display: inline-block; margin-top: 6px; }
   .warn { font-size: .85rem; color: #888; margin-top: 24px; }
 </style>
 </head>
 <body>
   <h2>Ricerca sentenze - indice OpenGA</h2>
-  <p>Cerca nell'indice (dati aperti della Giustizia amministrativa: sede, sezione, numero, esito, oggetto del ricorso). Per ogni sentenza trovata, il sistema cerca il link al testo vero e scrive una bozza di massima.</p>
+  <p>Cerca nell'indice (dati aperti della Giustizia amministrativa). Per ogni risultato, apri il portale ufficiale per leggere il testo, poi incollalo qui per avere una bozza di massima.</p>
 
   <textarea id="q" placeholder="parole nell'oggetto, oppure un numero, es. 523/2026"></textarea><br>
-  <label>Risultati: <select id="n"><option value="3">3</option><option value="5" selected>5</option></select></label>
+  <label>Risultati: <select id="n"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select></label>
   <button onclick="cerca()">Cerca</button>
   <p id="status"></p>
   <div id="results"></div>
 
-  <p class="warn">Le massime sono bozze scritte da un modello linguistico a partire dal testo della sentenza: vanno sempre controllate prima di usarle. I link portano al portale ufficiale della Giustizia amministrativa.</p>
+  <p class="warn">Le massime sono bozze scritte da un modello linguistico a partire dal testo che incolli: vanno sempre controllate. I link portano alla ricerca del portale ufficiale, non direttamente alla sentenza.</p>
 
 <script>
+let contatore = 0;
+
 async function cerca() {
   const q = document.getElementById('q').value.trim();
   const n = document.getElementById('n').value;
   if (!q) return;
-  document.getElementById('status').textContent = 'Ricerca in corso... può richiedere qualche secondo per risultato.';
+  document.getElementById('status').textContent = 'Ricerca in corso...';
   document.getElementById('results').innerHTML = '';
 
-  try {
-    const resp = await fetch(`/search?q=${encodeURIComponent(q)}&n=${n}`);
-    const data = await resp.json();
-    document.getElementById('status').textContent =
-      `${data.trovati_in_indice} corrispondenze nell'indice, mostrate le prime ${data.risultati.length}.`;
+  const resp = await fetch(`/search?q=${encodeURIComponent(q)}&n=${n}`);
+  const data = await resp.json();
+  document.getElementById('status').textContent = `${data.risultati.length} risultati mostrati.`;
 
-    const container = document.getElementById('results');
-    if (!data.risultati.length) {
-      container.innerHTML = '<p>Nessuna corrispondenza. Prova con altre parole o un numero diverso.</p>';
-      return;
-    }
-    data.risultati.forEach(r => {
-      const div = document.createElement('div');
-      div.className = 'card';
-      let html = `<p class="cite">${esc(r.citazione)}</p>`;
-      html += `<p class="obj">${esc(r.oggetto)} &mdash; ${esc(r.esito)}</p>`;
-      if (r.link) {
-        html += `<a class="link" href="${esc(r.link)}" target="_blank" rel="noopener">Apri la sentenza sul portale</a>`;
-      } else {
-        html += `<p class="err">${esc(r.errore || 'Link non disponibile')}</p>`;
-      }
-      if (r.massima) {
-        html += `<div class="massima">${formatMassima(r.massima)}</div>`;
-      } else if (r.errore_lettura) {
-        html += `<p class="err">Non è stato possibile leggere il testo: ${esc(r.errore_lettura)}</p>`;
-      } else if (r.errore_massima) {
-        html += `<p class="err">Testo letto, ma la massima non è stata scritta: ${esc(r.errore_massima)}</p>`;
-      }
-      div.innerHTML = html;
-      container.appendChild(div);
+  const container = document.getElementById('results');
+  if (!data.risultati.length) {
+    container.innerHTML = '<p>Nessuna corrispondenza. Prova altre parole o un numero diverso.</p>';
+    return;
+  }
+
+  data.risultati.forEach(r => {
+    contatore++;
+    const id = 'card' + contatore;
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <p class="cite">${esc(r.citazione)}</p>
+      <p class="obj">${esc(r.oggetto)} &mdash; ${esc(r.esito)}</p>
+      <div class="cerca-box">Sul portale, cerca: <b>${esc(r.sede_da_cercare)}</b>, numero <b>${esc(r.numero_da_cercare || '')}</b></div>
+      <a class="link" href="${esc(r.ricerca_portale_url)}" target="_blank" rel="noopener">Apri la ricerca del portale</a>
+      <div class="massima-panel">
+        <button type="button" onclick="toggleMassima('${id}')">Scrivi la massima (incolla il testo)</button>
+        <div id="${id}" style="display:none">
+          <textarea placeholder="Incolla qui il testo della sentenza"></textarea><br>
+          <button type="button" onclick="generaMassima('${id}', ${JSON.stringify(r).replace(/"/g, '&quot;')})">Genera</button>
+          <div class="massima-out"></div>
+        </div>
+      </div>`;
+    container.appendChild(div);
+  });
+}
+
+function toggleMassima(id) {
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function generaMassima(id, r) {
+  const panel = document.getElementById(id);
+  const testo = panel.querySelector('textarea').value.trim();
+  const out = panel.querySelector('.massima-out');
+  if (testo.length < 300) {
+    out.innerHTML = '<span class="err">Incolla il testo completo della decisione: qui ce n\'è troppo poco.</span>';
+    return;
+  }
+  out.textContent = 'Scrivo la massima...';
+  try {
+    const resp = await fetch('/massima', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ citazione: r.citazione, oggetto: r.oggetto, tipo_ricorso: r.tipo_ricorso, esito: r.esito, testo })
     });
+    const data = await resp.json();
+    if (data.errore) {
+      out.innerHTML = `<span class="err">${esc(data.errore)}</span>`;
+    } else {
+      out.innerHTML = formatMassima(data.massima);
+    }
   } catch (e) {
-    document.getElementById('status').textContent = 'Errore nella ricerca. Riprova.';
+    out.innerHTML = '<span class="err">Errore di connessione. Riprova.</span>';
   }
 }
 
