@@ -126,7 +126,9 @@ def search_index(q: str, n: int) -> list[dict]:
                        esito, tipo_ricorso, oggetto_ricorso, tipo_provvedimento
                 FROM decisioni
                 WHERE search_vector @@ plainto_tsquery('italian', :q)
-                ORDER BY data_pubblicazione DESC LIMIT :n;
+                ORDER BY ts_rank(search_vector, plainto_tsquery('italian', :q)) DESC,
+                         data_pubblicazione DESC
+                LIMIT :n;
             """, q=" ".join(text_words) or q, n=n)
         columns = [c["name"] for c in conn.columns]
         return [dict(zip(columns, row)) for row in rows]
