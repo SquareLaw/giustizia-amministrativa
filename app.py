@@ -1,26 +1,27 @@
 """
-app.py - Motore di ricerca su indice OpenGA (database Postgres) con link
-alla sentenza vera e massima scritta automaticamente da Claude.
+app.py - Motore di ricerca su indice OpenGA (database Postgres).
 
-Rispetto alla prima versione (data.json bundle), ora legge da un database
-Postgres popolato da ingest_openga.py - copre tutte le sedi TAR + CDS,
-non solo le due caricate a mano all'inizio.
+NIENTE PIU' link diretto indovinato alla sentenza - si e' rivelato
+inaffidabile (funziona per pochi casi verificati per caso, fallisce sulla
+maggior parte). Al suo posto:
+  - Il sistema mostra citazione, oggetto e esito (dati sempre affidabili,
+    vengono dal database).
+  - Un link alla RICERCA del portale (non alla sentenza diretta), con
+    sede e numero mostrati chiaramente da copiare nella ricerca.
+  - Un pulsante "Scrivi la massima": incolli tu il testo della sentenza
+    (trovata sul portale), il sistema scrive la bozza di massima.
 
-ATTENZIONE - da leggere prima di usarlo su scala:
-Le regole di accesso della Giustizia amministrativa vietano l'accesso
-massivo ai singoli provvedimenti per fini commerciali, e un altro indirizzo
-del sito vieta esplicitamente gli accessi automatici. Non verificato con un
-parere legale.
+Questo NON genera piu' massime in automatico per ogni risultato - serve
+il testo, che ora va incollato a mano.
 """
 
 import os
 import re
 import unicodedata
 
-import requests
-from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 import anthropic
 
 from db import get_conn
@@ -28,43 +29,7 @@ from db import get_conn
 app = FastAPI()
 claude_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-# Schema dell'indirizzo per sede, usato per costruire il link alla sentenza.
-# "confermato" = trovato su un indirizzo vero durante le ricerche di oggi.
-# "dedotto" = segue la stessa convenzione (sigla provincia italiana) delle
-# sedi confermate, MAI verificato su un indirizzo vero - puo' sbagliare.
-SEDE_SCHEMA = {
-    "CDS": "cds",                                    # confermato
-    "TAR-ABRUZZO-L-AQUILA": "tar_aq",                 # confermato
-    "TAR-ABRUZZO-PESCARA": "tar_pe",                  # dedotto
-    "TAR-BASILICATA": "tar_pz",                       # dedotto (Potenza)
-    "TAR-CALABRIA-CATANZARO": "tar_cz",               # dedotto
-    "TAR-CALABRIA-REGGIO-CALABRIA": "tar_rc",         # dedotto
-    "TAR-CAMPANIA-NAPOLI": "tar_na",                  # confermato
-    "TAR-CAMPANIA-SALERNO": "tar_sa",                 # dedotto
-    "TAR-EMILIA-ROMAGNA-BOLOGNA": "tar_bo",           # dedotto
-    "TAR-EMILIA-ROMAGNA-PARMA": "tar_pr",             # dedotto
-    "TAR-FRIULI-VENEZIA-GIULIA": "tar_ts",            # dedotto (Trieste)
-    "TAR-LAZIO-LATINA": "tar_lt",                     # dedotto
-    "TAR-LAZIO-ROMA": "tar_rm",                       # confermato
-    "TAR-LIGURIA": "tar_ge",                          # dedotto (Genova)
-    "TAR-LOMBARDIA-BRESCIA": "tar_bs",                # dedotto
-    "TAR-LOMBARDIA-MILANO": "tar_mi",                 # dedotto
-    "TAR-MARCHE": "tar_an",                           # dedotto (Ancona)
-    "TAR-MOLISE": "tar_cb",                           # dedotto (Campobasso)
-    "TAR-PIEMONTE": "tar_to",                         # dedotto (Torino)
-    "TAR-PUGLIA-BARI": "tar_ba",                      # dedotto
-    "TAR-PUGLIA-LECCE": "tar_le",                     # dedotto (visto in un indirizzo, non confermato con certezza)
-    "TAR-SARDEGNA": "tar_ca",                         # dedotto (Cagliari)
-    "TAR-SICILIA-PALERMO": "tar_pa",                  # confermato
-    "TAR-SICILIA-CATANIA": "tar_ct",                  # dedotto
-    "TAR-TOSCANA": "tar_fi",                          # dedotto (Firenze)
-    "TRGA-TRENTO": "tar_tn",                          # dedotto
-    "TRGA-BOLZANO": "tar_bz",                         # confermato
-    "TAR-UMBRIA": "tar_pg",                           # dedotto (Perugia)
-    "TAR-VALLE-D-AOSTA": "tar_ao",                    # dedotto
-    "TAR-VENETO": "tar_ve",                           # dedotto (Venezia)
-    # CGA-SICILIA: schema sconosciuto, non e' un TAR - nessun link finche' non si trova un esempio vero
-}
+RICERCA_PORTALE_URL = "https://www.giustizia-amministrativa.it/web/guest/dcsnprr"
 
 ORD = {"PRIMA": "I", "SECONDA": "II", "TERZA": "III", "QUARTA": "IV", "QUINTA": "V",
        "SESTA": "VI", "SETTIMA": "VII", "OTTAVA": "VIII", "NONA": "IX", "DECIMA": "X"}
@@ -73,17 +38,6 @@ MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
         "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
 
 MAX_CHARS = 50000
-
-
-def norm(s: str) -> str:
-    s = unicodedata.normalize("NFD", s or "")
-    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    return s.lower()
-
-
-def pretty_sede(sede: str) -> str:
-    return PRETTY_SEDE.get(sede, sede)
-
 
 PRETTY_SEDE = {
     "CDS": "Consiglio di Stato",
@@ -120,6 +74,16 @@ PRETTY_SEDE = {
 }
 
 
+def norm(s: str) -> str:
+    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.lower()
+
+
+def pretty_sede(sede: str) -> str:
+    return PRETTY_SEDE.get(sede, sede)
+
+
 def sez_short(z: str) -> str:
     if (z or "").upper() == "PLENARIA":
         return "Ad. plen."
@@ -138,55 +102,8 @@ def citation(row: dict) -> str:
     return f"{court}, {sez_short(row['sezione'])}, {date_it}, n. {numero}"
 
 
-CODICI_DA_PROVARE = ["11", "01", "20", "21", "02", "12"]  # ordine di tentativo
-
-
-def portal_link_candidates(row: dict) -> list[dict]:
-    """Restituisce piu' indirizzi possibili da provare in ordine, non uno
-    solo - il codice finale del nome file non e' sempre lo stesso anche
-    per lo stesso tipo di sede (verificato su ricerche vere: a volte _11
-    o _01 non funzionano e serve un codice diverso, senza un motivo noto).
-    Il primo tentativo e' quello piu' probabile per quel tipo di corte."""
-    schema = SEDE_SCHEMA.get(row["sede"])
-    if not schema or (row.get("tipo_provvedimento") or "").upper() != "SENTENZA":
-        return []
-    n = row["numero_provvedimento"]
-    r = row["numero_ricorso"] or ""
-
-    primo_tentativo = "11" if schema == "cds" else "01"
-    ordine = [primo_tentativo] + [c for c in CODICI_DA_PROVARE if c != primo_tentativo]
-
-    candidates = []
-    for code in ordine:
-        base = f"https://mdp.giustizia-amministrativa.it/visualizza/?nodeRef=&schema={schema}&nrg={r}&nomeFile={n}_{code}"
-        candidates.append({"html": base + ".html&subDir=Provvedimenti", "xml": base + ".xml&subDir=Provvedimenti"})
-    return candidates
-
-
-def fetch_text(url: str, numero_atteso: str = None) -> str:
-    """numero_atteso: se dato, il numero (5 cifre, es. '00523') deve
-    comparire nel testo scaricato - altrimenti la pagina e' quella di
-    UN'ALTRA decisione (successo tecnico, ma contenuto sbagliato), e va
-    scartata anche se si e' aperta correttamente."""
-    resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; RicercaOpenGA/0.1)"})
-    resp.raise_for_status()
-    is_xml = url.split("nomeFile=")[1].split("&")[0].endswith(".xml")
-    soup = BeautifulSoup(resp.content, "xml" if is_xml else "html.parser")
-    if soup.find(string=re.compile("pagina non trovata", re.IGNORECASE)):
-        raise ValueError("Documento non trovato a questo indirizzo")
-    for tag in soup(["script", "style"]):
-        tag.decompose()
-    text = re.sub(r"\n{3,}", "\n\n", soup.get_text(separator="\n")).strip()
-    if len(text) < 300:
-        raise ValueError("Testo troppo corto o pagina non riconosciuta")
-    if numero_atteso and numero_atteso not in text:
-        raise ValueError(f"Il numero atteso ({numero_atteso}) non compare nel testo - probabilmente e' la decisione sbagliata")
-    return text
-
-
 def search_index(q: str, n: int) -> list[dict]:
     words = [w for w in re.split(r"\s+", norm(q)) if w and w not in ("n", "nr", "n.", "nr.", "numero")]
-
     num_matches = [w for w in words if re.match(r"^\d+/\d{4}$", w)]
     text_words = [w for w in words if w not in num_matches]
 
@@ -204,7 +121,6 @@ def search_index(q: str, n: int) -> list[dict]:
                 ORDER BY data_pubblicazione DESC LIMIT :n;
             """, provv=provv, ricorso_pattern=f"{anno}%{numero.zfill(5)}", n=n)
         else:
-            query_text = " & ".join(text_words) if text_words else q
             rows = conn.run("""
                 SELECT sede, sezione, numero_provvedimento, numero_ricorso, data_pubblicazione,
                        esito, tipo_ricorso, oggetto_ricorso, tipo_provvedimento
@@ -218,24 +134,47 @@ def search_index(q: str, n: int) -> list[dict]:
         conn.close()
 
 
-def build_massima_prompt(row: dict, text: str, cut: bool) -> str:
+@app.get("/search")
+def search(q: str, n: int = 5):
+    matches = search_index(q, n)
+    risultati = []
+    for row in matches:
+        numero = int(row["numero_provvedimento"][4:]) if row["numero_provvedimento"] else None
+        anno = row["numero_provvedimento"][:4] if row["numero_provvedimento"] else None
+        risultati.append({
+            "citazione": citation(row),
+            "oggetto": (row["oggetto_ricorso"] or "").capitalize(),
+            "esito": (row["esito"] or "").capitalize(),
+            "tipo_ricorso": (row["tipo_ricorso"] or "").capitalize(),
+            "sede_da_cercare": pretty_sede(row["sede"]),
+            "numero_da_cercare": f"{numero}/{anno}" if numero else None,
+            "ricerca_portale_url": RICERCA_PORTALE_URL,
+        })
+    return JSONResponse({"query": q, "risultati": risultati})
+
+
+class MassimaRequest(BaseModel):
+    citazione: str
+    oggetto: str = ""
+    tipo_ricorso: str = ""
+    esito: str = ""
+    testo: str
+
+
+def build_massima_prompt(req: MassimaRequest, text: str, cut: bool) -> str:
     return (
         "Sei un assistente che prepara bozze di massime giurisprudenziali per uno studio legale. "
         "Lavori solo sul testo della decisione fornito qui sotto.\n\n"
-        f"DATI DELLA DECISIONE (dall'indice OpenGA):\n{citation(row)}\n"
-        f"Tipo di ricorso: {(row['tipo_ricorso'] or '').capitalize()}\n"
-        f"Esito indicato: {(row['esito'] or '').capitalize()}\n"
-        f"Oggetto del ricorso: {(row['oggetto_ricorso'] or '').capitalize()}\n\n"
+        f"DATI DELLA DECISIONE (dall'indice OpenGA):\n{req.citazione}\n"
+        f"Tipo di ricorso: {req.tipo_ricorso}\nEsito indicato: {req.esito}\nOggetto del ricorso: {req.oggetto}\n\n"
         "COMPITO:\nScrivi la massima nello stile del massimario: 2-4 frasi che enunciano il principio di "
         "diritto affermato dal collegio, in forma astratta, senza nomi di parti. Usa solo ciò che è scritto "
         "nel testo: non aggiungere norme, sentenze o principi che nel testo non compaiono.\n\n"
-        "FORMATO: testo semplice, senza Markdown e senza asterischi. Quattro sezioni, ciascuna con il "
-        "titolo su una riga:\n"
-        "Massima:\n(la massima)\n\n"
-        "Riferimenti:\n(norme e precedenti citati nel testo; se non ce ne sono scrivi \u00abnessuno indicato\u00bb)\n\n"
-        "Dove verificarla:\n(il punto del testo, con una frase breve copiata tra virgolette, max 25 parole)\n\n"
-        "Avvertenze:\n(segnala incongruenze coi dati, se e' una decisione di rito, se il testo e' accorciato; "
-        "altrimenti scrivi \u00abnessuna\u00bb)\n\n"
+        "FORMATO: testo semplice, senza Markdown. Quattro sezioni:\n"
+        "Massima:\n(la massima)\n\nRiferimenti:\n(norme/precedenti citati, o \u00abnessuno indicato\u00bb)\n\n"
+        "Dove verificarla:\n(punto del testo, frase breve tra virgolette, max 25 parole)\n\n"
+        "Avvertenze:\n(incongruenze coi dati forniti, se e' una decisione di rito, se il testo e' incompleto; "
+        "altrimenti \u00abnessuna\u00bb)\n\n"
         + ("NOTA: il testo e' stato accorciato per lunghezza.\n\n" if cut else "")
         + f"TESTO DELLA DECISIONE:\n{text}"
     )
@@ -250,68 +189,20 @@ def fit(text: str):
     return text[:head] + "\n[... parte omessa per lunghezza ...]\n" + text[-(MAX_CHARS - head):], True
 
 
-@app.get("/search")
-def search(q: str, n: int = 5):
-    matches = search_index(q, n)
-    risultati = []
-
-    for row in matches:
-        entry = {
-            "citazione": citation(row),
-            "oggetto": (row["oggetto_ricorso"] or "").capitalize(),
-            "esito": (row["esito"] or "").capitalize(),
-            "tipo_ricorso": (row["tipo_ricorso"] or "").capitalize(),
-        }
-        candidates = portal_link_candidates(row)
-        if not candidates:
-            entry["link"] = None
-            entry["errore"] = "Indirizzo non disponibile (sentenza breve o sede non ancora mappata)."
-            risultati.append(entry)
-            continue
-
-        text = None
-        working_links = None
-        tentativi_falliti = 0
-        numero_atteso = row["numero_provvedimento"][4:].zfill(5)  # es. "00523"
-        for links in candidates:
-            for url in (links["xml"], links["html"]):
-                try:
-                    text = fetch_text(url, numero_atteso=numero_atteso)
-                    working_links = links
-                    break
-                except Exception as e:
-                    entry["errore_lettura"] = str(e)
-            if text:
-                break
-            tentativi_falliti += 1
-
-        if not working_links:
-            entry["link"] = candidates[0]["html"]  # mostra almeno il primo tentativo per riferimento
-            entry["errore"] = f"Nessuno dei {len(candidates)} indirizzi provati ha funzionato."
-        else:
-            entry["link"] = working_links["html"]
-            entry["link_xml"] = working_links["xml"]
-
-        if not text:
-            entry["massima"] = None
-            risultati.append(entry)
-            continue
-
-        fitted, cut = fit(text)
-        try:
-            response = claude_client.messages.create(
-                model="claude-sonnet-4-6", max_tokens=700,
-                messages=[{"role": "user", "content": build_massima_prompt(row, fitted, cut)}],
-            )
-            entry["massima"] = "".join(b.text for b in response.content if b.type == "text")
-            entry.pop("errore_lettura", None)
-        except Exception as e:
-            entry["massima"] = None
-            entry["errore_massima"] = str(e)
-
-        risultati.append(entry)
-
-    return JSONResponse({"query": q, "risultati": risultati})
+@app.post("/massima")
+def massima(req: MassimaRequest):
+    if len(req.testo.strip()) < 300:
+        return JSONResponse({"errore": "Testo troppo corto - incolla il testo completo della decisione."}, status_code=400)
+    fitted, cut = fit(req.testo)
+    try:
+        response = claude_client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=700,
+            messages=[{"role": "user", "content": build_massima_prompt(req, fitted, cut)}],
+        )
+        testo_massima = "".join(b.text for b in response.content if b.type == "text")
+        return JSONResponse({"massima": testo_massima})
+    except Exception as e:
+        return JSONResponse({"errore": str(e)}, status_code=500)
 
 
 @app.get("/")
