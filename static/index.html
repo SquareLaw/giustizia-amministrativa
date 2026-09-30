@@ -2,96 +2,350 @@
 <html lang="it">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ricerca sentenze - indice OpenGA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Literata:opsz,wght@7..72,500;7..72,600&display=swap" rel="stylesheet">
 <style>
-  body { font-family: sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
-  textarea { width: 100%; font-size: 15px; padding: 8px; }
-  #q { height: 60px; }
-  select, button { font: inherit; }
-  button { padding: 9px 16px; font-size: 14px; margin-top: 8px; cursor: pointer; }
-  #status { margin-top: 14px; color: #888; font-size: 14px; }
-  .card { margin-top: 22px; padding: 16px 18px; border: 1px solid #ddd; border-radius: 8px; }
-  .cite { font-weight: 700; font-size: 1.05rem; margin: 0 0 6px; }
-  .obj { color: #444; margin: 0 0 10px; }
-  .cerca-box { background: #f0f4f8; border-radius: 6px; padding: 10px 12px; font-size: .9rem; margin-bottom: 10px; }
+  :root {
+    --bg: #EDF0EE; --surface: #FFFFFF; --sunk: #F5F7F6; --ink: #1B2522; --muted: #5A6864; --line: #D5DCD9;
+    --accent: #1F5C4A; --accent-ink: #184A3B; --on-accent: #FFFFFF; --accent-soft: #E2EDE8;
+    --mark: #FBE7A1; --mark-ink: #1B2522; --err: #A33A2B;
+    --c-respinge: #5D6A80; --on-respinge: #FFFFFF;
+    --c-accoglie: #0072B2; --on-accoglie: #FFFFFF;
+    --c-parziale: #E69F00; --on-parziale: #1A1A1A;
+    --c-nomerito: #B7BFCC; --on-nomerito: #1A1A1A;
+    --c-altro: #C4A6D1;    --on-altro: #1A1A1A;
+    --serif: "Literata", Georgia, "Times New Roman", serif;
+    --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111816; --surface: #18221F; --sunk: #141C1A; --ink: #E4ECE9; --muted: #9AABA5; --line: #2A3733;
+      --accent: #7CC4A8; --accent-ink: #9AD6BE; --on-accent: #0E1513; --accent-soft: #1E2D28;
+      --mark: #6B5712; --mark-ink: #FFF6D6; --err: #F08A7A;
+      --c-respinge: #8A97AD; --on-respinge: #0F141D;
+      --c-accoglie: #4DA3E0; --on-accoglie: #0F141D;
+      --c-nomerito: #5B667A; --on-nomerito: #E6EAF2;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 72px; }
+  button, input, select, textarea { font: inherit; color: var(--ink); }
+  button { cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  h1 { font-family: var(--serif); font-weight: 600; font-size: clamp(1.7rem, 1.1rem + 2.4vw, 2.4rem); line-height: 1.12;
+       letter-spacing: -0.012em; margin: 0 0 8px; }
+  .lede { color: var(--muted); max-width: 64ch; margin: 0 0 24px; }
+
+  /* Ricerca */
+  .searchrow { display: flex; gap: 10px; align-items: stretch; }
+  .search { position: relative; flex: 1; }
+  .search svg { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); width: 22px; height: 22px; color: var(--accent); pointer-events: none; }
+  #q { width: 100%; height: 100%; min-height: 60px; padding: 14px 18px 14px 52px; font-family: var(--serif); font-size: clamp(1.05rem, 1rem + .5vw, 1.25rem);
+       background: var(--surface); border: 2px solid var(--line); border-radius: 14px; }
+  #q:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
+  #q::placeholder { color: var(--muted); opacity: .85; }
+  .go { padding: 0 24px; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 14px; font-weight: 600; font-size: 1rem; }
+  .go:hover { background: var(--accent-ink); }
+  .go:disabled { opacity: .6; cursor: default; }
+  .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 10px 2px 0; font-size: .875rem; color: var(--muted); }
+  .opts select { padding: 4px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; font-size: .875rem; }
+
+  /* Stato */
+  #status { margin: 26px 0 0; padding-bottom: 12px; border-bottom: 2px solid var(--ink); font-family: var(--serif); font-weight: 600; font-size: 1.2rem; min-height: 1.5em; }
+  #status:empty { border-bottom: 0; padding: 0; }
+  #status .sub { display: block; font-family: var(--sans); font-weight: 400; font-size: .875rem; color: var(--muted); }
+  .spin { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; vertical-align: -1px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+
+  /* Schede */
+  .card { padding: 22px 0; border-bottom: 1px solid var(--line); }
+  .head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; }
+  .cite { font-family: var(--serif); font-weight: 600; font-size: 1.12rem; line-height: 1.3; margin: 0; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: .78rem; font-weight: 600; }
+  .g-respinge { background: var(--c-respinge); color: var(--on-respinge); }
+  .g-accoglie { background: var(--c-accoglie); color: var(--on-accoglie); }
+  .g-parziale { background: var(--c-parziale); color: var(--on-parziale); }
+  .g-nomerito { background: var(--c-nomerito); color: var(--on-nomerito); }
+  .g-altro    { background: var(--c-altro);    color: var(--on-altro); }
+  .obj { margin: 8px 0 12px; max-width: 74ch; }
+  mark { background: var(--mark); color: var(--mark-ink); padding: 0 2px; border-radius: 2px; }
+  .cerca-box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 10px 14px; background: var(--accent-soft); border-radius: 8px; font-size: .9rem; }
   .cerca-box b { font-variant-numeric: tabular-nums; }
-  a.link { display: inline-block; }
-  .massima-panel { margin-top: 10px; }
-  .massima-panel textarea { height: 120px; font-size: 13px; }
-  .massima-out { white-space: pre-wrap; background: #f6f6f6; padding: 12px 14px; border-radius: 6px; margin-top: 10px; }
-  .massima-out strong { display: block; margin-top: 8px; }
-  .err { color: #a33; font-size: .9rem; }
-  .warn { font-size: .85rem; color: #888; margin-top: 24px; }
+  .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+         font-size: .9rem; color: var(--ink); text-decoration: none; }
+  .btn:hover:not(:disabled) { border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+  .btn.primary:hover { background: var(--accent-ink); }
+  .btn.quiet { background: none; border-color: transparent; color: var(--accent-ink); padding-left: 6px; padding-right: 6px; }
+  .btn.quiet:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* Risultati simili raggruppati */
+  .simbtn { margin-top: 12px; display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 10px; background: var(--sunk); color: var(--accent-ink);
+            border: 1px solid var(--line); border-radius: 8px; font-size: .875rem; font-weight: 500; }
+  .simbtn .car { display: inline-block; transition: transform .15s ease; }
+  .simbtn[aria-expanded="true"] .car { transform: rotate(90deg); }
+  .simlist { list-style: none; margin: 10px 0 0; padding: 4px 0 4px 16px; border-left: 3px solid var(--accent-soft); display: grid; gap: 10px; }
+  .simlist li { font-size: .9rem; }
+  .simlist .sc { font-family: var(--serif); font-weight: 600; margin-right: 8px; }
+  .simlist .row2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 2px; color: var(--muted); }
+  .simlist a { color: var(--accent-ink); }
+
+  /* Massima */
+  .massima-panel { margin-top: 12px; padding: 16px; background: var(--sunk); border: 1px solid var(--line); border-radius: 10px; }
+  .massima-panel[hidden] { display: none; }
+  .massima-panel textarea { width: 100%; min-height: 140px; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: .9rem; resize: vertical; }
+  .mrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+  .mcount { font-size: .8125rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .massima-out { white-space: pre-wrap; margin-top: 14px; line-height: 1.6; font-family: var(--serif); font-size: .98rem; max-width: 74ch; }
+  .massima-out:empty { display: none; }
+  .massima-out strong { display: block; margin-top: 10px; font-family: var(--sans); font-size: .9rem; }
+  .err { color: var(--err); font-size: .9rem; font-family: var(--sans); }
+  .empty { padding: 28px 0; color: var(--muted); }
+
+  .warn { font-size: .85rem; color: var(--muted); margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); max-width: 74ch; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: min(92vw, 560px); padding: 10px 16px; text-align: center;
+           background: var(--ink); color: var(--bg); border-radius: 8px; font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+  .toast.on { opacity: 1; }
+
+  @media (max-width: 600px) {
+    main { padding: 28px 16px 56px; }
+    .searchrow { flex-direction: column; }
+    .go { min-height: 48px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } .simbtn .car, .toast { transition: none; } }
 </style>
 </head>
 <body>
-  <h2>Ricerca sentenze - indice OpenGA</h2>
-  <p>Cerca nell'indice (dati aperti della Giustizia amministrativa). Per ogni risultato, apri il portale ufficiale per leggere il testo, poi incollalo qui per avere una bozza di massima.</p>
+<main>
+  <h1>Ricerca sentenze</h1>
+  <p class="lede">Cerca nell'indice dei dati aperti della Giustizia amministrativa. Per ogni risultato cerca la sentenza sul portale ufficiale, poi incolla qui il testo per avere una bozza di massima.</p>
 
-  <textarea id="q" placeholder="parole nell'oggetto, oppure un numero, es. 523/2026"></textarea><br>
-  <label>Risultati: <select id="n"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select></label>
-  <button onclick="cerca()">Cerca</button>
-  <p id="status"></p>
+  <form id="form" role="search">
+    <div class="searchrow">
+      <label class="search">
+        <span class="sr">Parole nell'oggetto oppure numero della decisione</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+        <input id="q" type="search" autocomplete="off" placeholder="Parole nell'oggetto, oppure un numero come 523/2026">
+      </label>
+      <button id="go" class="go" type="submit">Cerca</button>
+    </div>
+    <div class="opts">
+      <label>Risultati da mostrare
+        <select id="n"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>
+      </label>
+      <span>La ricerca guarda l'oggetto del ricorso, non il testo della sentenza.</span>
+    </div>
+  </form>
+
+  <p id="status" aria-live="polite"></p>
   <div id="results"></div>
 
-  <p class="warn">Le massime sono bozze scritte da un modello linguistico a partire dal testo che incolli: vanno sempre controllate. I link portano alla ricerca del portale ufficiale, non direttamente alla sentenza.</p>
+  <p class="warn">Le massime sono bozze scritte da un modello linguistico a partire dal testo che incolli: vanno sempre controllate. Il pulsante di ricerca apre il portale ufficiale e copia il numero della decisione: la sentenza non si apre direttamente.</p>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</main>
 
 <script>
-let contatore = 0;
+const RISULTATI = [];          // i dati di ogni scheda, letti dai pulsanti
+let ultimaRicerca = '';
+
+// ---------- utilità ----------
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function norm(s) { return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function formatMassima(t) { return esc(t).replace(/^(Massima|Riferimenti|Dove verificarla|Avvertenze):/gm, '<strong>$1:</strong>'); }
+
+// Minuscole leggibili per testi scritti tutti in maiuscolo
+const SIGLE = new Set('tar cds pnrr arera anac inps inail asl ccnl iva tari imu ue spa srl'.split(' '));
+function frase(s) {
+  s = s || '';
+  if (s !== s.toUpperCase()) return s;
+  let t = s.toLowerCase().replace(/[a-zà-ÿ]+/g, w => SIGLE.has(w) ? w.toUpperCase() : w);
+  t = t.replace(/\b(ii|iii|iv|vi|vii|viii|ix|xi|xii)\b/g, w => w.toUpperCase());
+  return t.replace(/(^|\s-\s|\.\s+)([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase());
+}
+
+// Colore dell'esito
+function gruppoEsito(e) {
+  const x = (e || '').toUpperCase();
+  if (/PARZIAL|PARTE RIGETTA E PARTE ACCOGLIE/.test(x)) return 'parziale';
+  if (/^ACCOGLI|^ACCOLT/.test(x)) return 'accoglie';
+  if (/^RESPING|^RESPINT|^RIGETT/.test(x)) return 'respinge';
+  if (/INAMMISSIB|IMPROCEDIB|IRRICEVIB|ESTINT|CESSATA MATERIA|PERENZ|RINUNC|RINUNZ|DIFETTO DI GIURISDIZIONE|INCOMPETENZ/.test(x)) return 'nomerito';
+  return 'altro';
+}
+
+// Evidenzia le parole cercate (senza badare ad accenti e maiuscole)
+function evidenzia(testo, q) {
+  const parole = norm(q).split(/\s+/).filter(w => w.length > 1 && !/^\d+\/\d{4}$/.test(w));
+  const n = norm(testo);
+  if (!parole.length || n.length !== testo.length) return esc(testo);
+  const r = [];
+  parole.forEach(w => { let i = 0; while ((i = n.indexOf(w, i)) > -1) { r.push([i, i + w.length]); i += w.length; } });
+  if (!r.length) return esc(testo);
+  r.sort((a, b) => a[0] - b[0]);
+  const m = [r[0]];
+  r.slice(1).forEach(x => { const l = m[m.length - 1]; if (x[0] <= l[1]) l[1] = Math.max(l[1], x[1]); else m.push(x); });
+  let out = '', p = 0;
+  m.forEach(x => { out += esc(testo.slice(p, x[0])) + '<mark>' + esc(testo.slice(x[0], x[1])) + '</mark>'; p = x[1]; });
+  return out + esc(testo.slice(p));
+}
+
+// Raggruppa i risultati con oggetto quasi identico (contenzioso seriale)
+const STOP = new Set('della delle dello degli dalla dalle dallo alla alle allo nella nelle nello sulla sulle sullo questo questa quale quali sono stato stata essere anche come oltre ogni relativo relativa ricorso ricorsi sentenza sentenze appello avverso annullamento riforma consiglio sezione ottemperanza esecuzione giudicato parte parti'.split(' '));
+function parole(o) { return new Set((norm(o).match(/[a-z]{4,}/g) || []).filter(w => !STOP.has(w)).map(w => w.slice(0, 6))); }
+function raggruppa(lista) {
+  const gruppi = [];
+  lista.forEach(r => {
+    const s = parole(r.oggetto);
+    const g = gruppi.find(g => {
+      let inter = 0; s.forEach(x => { if (g.s.has(x)) inter++; });
+      return s.size >= 4 && g.s.size >= 4 && inter >= 4 && inter / (s.size + g.s.size - inter) >= 0.6;
+    });
+    if (g) g.altri.push(r); else gruppi.push({ r, s, altri: [] });
+  });
+  return gruppi;
+}
+
+let toastT;
+function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 2600); }
+function copia(t, msg) {
+  const ok = () => toast(msg);
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(ok, () => {}); return; }
+  try { const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); } catch (e) {}
+}
+
+// ---------- ricerca ----------
+document.getElementById('form').addEventListener('submit', e => { e.preventDefault(); cerca(); });
 
 async function cerca() {
   const q = document.getElementById('q').value.trim();
   const n = document.getElementById('n').value;
-  if (!q) return;
-  document.getElementById('status').textContent = 'Ricerca in corso...';
-  document.getElementById('results').innerHTML = '';
-
-  const resp = await fetch(`/search?q=${encodeURIComponent(q)}&n=${n}`);
-  const data = await resp.json();
-  document.getElementById('status').textContent = `${data.risultati.length} risultati mostrati.`;
-
+  const status = document.getElementById('status');
   const container = document.getElementById('results');
-  if (!data.risultati.length) {
-    container.innerHTML = '<p>Nessuna corrispondenza. Prova altre parole o un numero diverso.</p>';
+  const btn = document.getElementById('go');
+  if (!q) { document.getElementById('q').focus(); return; }
+  ultimaRicerca = q;
+  btn.disabled = true;
+  status.innerHTML = '<span class="spin" aria-hidden="true"></span>Ricerca in corso...';
+  container.innerHTML = '';
+  RISULTATI.length = 0;
+
+  let data;
+  try {
+    const resp = await fetch(`/search?q=${encodeURIComponent(q)}&n=${n}`);
+    if (!resp.ok) throw new Error(resp.status);
+    data = await resp.json();
+  } catch (e) {
+    status.innerHTML = '<span class="err">La ricerca non ha risposto. Controlla la connessione e riprova tra qualche secondo.</span>';
+    btn.disabled = false;
     return;
   }
+  btn.disabled = false;
 
-  data.risultati.forEach(r => {
-    contatore++;
-    const id = 'card' + contatore;
-    const div = document.createElement('div');
-    div.className = 'card';
-    div.innerHTML = `
-      <p class="cite">${esc(r.citazione)}</p>
-      <p class="obj">${esc(r.oggetto)} &mdash; ${esc(r.esito)}</p>
-      <div class="cerca-box">Sul portale, cerca: <b>${esc(r.sede_da_cercare)}</b>, numero <b>${esc(r.numero_da_cercare || '')}</b></div>
-      <a class="link" href="${esc(r.ricerca_portale_url)}" target="_blank" rel="noopener">Apri la ricerca del portale</a>
-      <div class="massima-panel">
-        <button type="button" onclick="toggleMassima('${id}')">Scrivi la massima (incolla il testo)</button>
-        <div id="${id}" style="display:none">
-          <textarea placeholder="Incolla qui il testo della sentenza"></textarea><br>
-          <button type="button" onclick="generaMassima('${id}', ${JSON.stringify(r).replace(/"/g, '&quot;')})">Genera</button>
-          <div class="massima-out"></div>
-        </div>
-      </div>`;
-    container.appendChild(div);
-  });
+  const lista = data.risultati || [];
+  if (!lista.length) {
+    status.textContent = '';
+    container.innerHTML = '<p class="empty">Nessuna corrispondenza. Prova con meno parole, con una parola più corta (per esempio «diniego» invece di «diniegato») o con un numero diverso.</p>';
+    return;
+  }
+  const gruppi = raggruppa(lista);
+  status.innerHTML = `${lista.length} ${lista.length === 1 ? 'risultato' : 'risultati'}` +
+    (gruppi.length < lista.length ? `<span class="sub">Raccolti in ${gruppi.length} ${gruppi.length === 1 ? 'gruppo' : 'gruppi'}: i risultati con oggetto quasi identico sono sotto il primo.</span>` : '');
+
+  gruppi.forEach(g => container.appendChild(scheda(g, q)));
 }
 
-function toggleMassima(id) {
-  const el = document.getElementById(id);
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+function scheda(g, q) {
+  const r = g.r;
+  const i = RISULTATI.push(r) - 1;
+  const div = document.createElement('article');
+  div.className = 'card';
+  div.dataset.i = i;
+  const altri = g.altri.map(a => {
+    const j = RISULTATI.push(a) - 1;
+    return `<li data-i="${j}"><span class="sc">${esc(a.citazione)}</span><span class="chip g-${gruppoEsito(a.esito)}">${esc(frase(a.esito) || 'Esito non indicato')}</span>
+      <div class="row2">Sul portale: ${esc(a.sede_da_cercare)}, n. ${esc(a.numero_da_cercare || '')}
+      <a href="${esc(a.ricerca_portale_url)}" target="_blank" rel="noopener" class="portale">Cerca sul portale</a></div></li>`;
+  }).join('');
+  div.innerHTML = `
+    <div class="head">
+      <h2 class="cite">${esc(r.citazione)}</h2>
+      <span class="chip g-${gruppoEsito(r.esito)}">${esc(frase(r.esito) || 'Esito non indicato')}</span>
+    </div>
+    <p class="obj">${evidenzia(frase(r.oggetto), q)}</p>
+    <div class="cerca-box"><span>Sul portale, cerca: <b>${esc(r.sede_da_cercare)}</b>, numero <b>${esc(r.numero_da_cercare || '')}</b></span></div>
+    <div class="acts">
+      <a class="btn primary portale" href="${esc(r.ricerca_portale_url)}" target="_blank" rel="noopener">Cerca la sentenza su Giustizia amministrativa</a>
+      <button type="button" class="btn quiet copiacit">Copia citazione</button>
+      <button type="button" class="btn apri" aria-expanded="false">Scrivi la massima</button>
+    </div>
+    <div class="massima-panel" hidden>
+      <label class="sr" for="t${i}">Testo della sentenza</label>
+      <textarea id="t${i}" placeholder="Incolla qui il testo della sentenza"></textarea>
+      <div class="mrow">
+        <button type="button" class="btn primary genera">Genera la massima</button>
+        <button type="button" class="btn quiet copiamass" hidden>Copia la massima</button>
+        <span class="mcount"></span>
+      </div>
+      <div class="massima-out" aria-live="polite"></div>
+    </div>
+    ${g.altri.length ? `<button type="button" class="simbtn" aria-expanded="false"><span class="car" aria-hidden="true">›</span>${g.altri.length === 1 ? 'Un altro risultato con oggetto simile' : 'Altri ' + g.altri.length + ' risultati con oggetto simile'}</button><ol class="simlist" hidden>${altri}</ol>` : ''}`;
+  return div;
 }
 
-async function generaMassima(id, r) {
-  const panel = document.getElementById(id);
+// ---------- pulsanti delle schede ----------
+document.getElementById('results').addEventListener('click', e => {
+  const card = e.target.closest('.card'); if (!card) return;
+  const r = RISULTATI[+card.dataset.i];
+
+  const portale = e.target.closest('.portale');
+  if (portale) {  // il link si apre normalmente; in più copiamo il numero da incollare
+    const li = portale.closest('li[data-i]');
+    const x = li ? RISULTATI[+li.dataset.i] : r;
+    if (x.numero_da_cercare) copia(String(x.numero_da_cercare), `Numero ${x.numero_da_cercare} copiato: sul portale scegli ${x.sede_da_cercare} e incollalo.`);
+    return;
+  }
+  if (e.target.closest('.copiacit')) { copia(r.citazione, 'Citazione copiata'); return; }
+  if (e.target.closest('.simbtn')) {
+    const b = e.target.closest('.simbtn'), open = b.getAttribute('aria-expanded') === 'true';
+    b.setAttribute('aria-expanded', String(!open)); b.nextElementSibling.hidden = open; return;
+  }
+  if (e.target.closest('.apri')) {
+    const b = e.target.closest('.apri'), p = card.querySelector('.massima-panel');
+    p.hidden = !p.hidden; b.setAttribute('aria-expanded', String(!p.hidden));
+    if (!p.hidden) p.querySelector('textarea').focus();
+    return;
+  }
+  if (e.target.closest('.genera')) { generaMassima(card, r); return; }
+  if (e.target.closest('.copiamass')) { copia(card.querySelector('.massima-out').textContent, 'Massima copiata'); }
+});
+document.getElementById('results').addEventListener('input', e => {
+  if (e.target.tagName !== 'TEXTAREA') return;
+  const n = e.target.value.length;
+  e.target.closest('.massima-panel').querySelector('.mcount').textContent = n ? n.toLocaleString('it-IT') + ' caratteri' : '';
+});
+
+async function generaMassima(card, r) {
+  const panel = card.querySelector('.massima-panel');
   const testo = panel.querySelector('textarea').value.trim();
   const out = panel.querySelector('.massima-out');
+  const btn = panel.querySelector('.genera');
+  const cp = panel.querySelector('.copiamass');
+  cp.hidden = true;
   if (testo.length < 300) {
     out.innerHTML = '<span class="err">Incolla il testo completo della decisione: qui ce n\'è troppo poco.</span>';
     return;
   }
-  out.textContent = 'Scrivo la massima...';
+  btn.disabled = true;
+  out.innerHTML = '<span class="spin" aria-hidden="true"></span>Scrivo la massima...';
   try {
     const resp = await fetch('/massima', {
       method: 'POST',
@@ -103,17 +357,13 @@ async function generaMassima(id, r) {
       out.innerHTML = `<span class="err">${esc(data.errore)}</span>`;
     } else {
       out.innerHTML = formatMassima(data.massima);
+      cp.hidden = false;
     }
   } catch (e) {
     out.innerHTML = '<span class="err">Errore di connessione. Riprova.</span>';
+  } finally {
+    btn.disabled = false;
   }
-}
-
-function esc(s) {
-  const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
-}
-function formatMassima(t) {
-  return esc(t).replace(/^(Massima|Riferimenti|Dove verificarla|Avvertenze):/gm, '<strong>$1:</strong>');
 }
 </script>
 </body>
