@@ -20,11 +20,11 @@ Ricerca (nessun uso di Claude, nessun costo in token):
      (websearch_to_tsquery di Postgres).
   4. Errori di battitura: se non si trova nulla, le parole sconosciute
      vengono corrette con la parola piu' simile del vocabolario (pg_trgm).
-     Il vocabolario si prepara da solo a ogni avvio dell'app (vedi
-     prepara_vocabolario): non serve eseguire nulla a mano sul database.
+     Il vocabolario si prepara da solo all'avvio dell'app (vedi
+     prepara_vocabolario) e si aggiorna quando cambia il numero di decisioni.
+     Lo stato si controlla all'indirizzo /stato.
 """
 
-import logging
 import os
 import re
 import threading
@@ -39,36 +39,52 @@ import anthropic
 
 from db import get_conn
 
-log = logging.getLogger("ricerca")
 
 
 # ---------- preparazione automatica del vocabolario (per la correzione degli errori) ----------
+# Stato visibile all'indirizzo /stato, utile per capire se la correzione e' attiva.
+STATO_VOCABOLARIO = {"stato": "non ancora avviato", "parole": 0}
+
+
+def _scrivi(msg):
+    # print con flush: compare subito nei log di Render
+    print(f"[vocabolario] {msg}", flush=True)
+
+
 def prepara_vocabolario():
-    """Crea (se manca) e ricostruisce il vocabolario delle parole presenti negli
-    oggetti dei ricorsi. Gira in sottofondo a ogni avvio: la ricerca funziona
-    anche mentre lavora, e se qualcosa va storto la correzione resta
-    semplicemente disattivata."""
+    """Prepara il vocabolario delle parole presenti negli oggetti dei ricorsi.
+    - Gira in sottofondo: la ricerca funziona anche mentre lavora.
+    - Se il numero di decisioni non e' cambiato dall'ultima volta, non rifa' nulla.
+    - Costruisce la versione nuova in una tabella a parte e la scambia con la
+      vecchia all'ultimo istante: le ricerche non restano mai bloccate.
+    - Se qualcosa va storto, la correzione degli errori resta disattivata e il
+      motivo compare nei log e in /stato."""
     conn = None
     try:
+        STATO_VOCABOLARIO["stato"] = "in preparazione"
+        _scrivi("avvio preparazione")
         conn = get_conn()
-        # Un solo processo alla volta, se Render ne avvia piu' d'uno.
-        if not conn.run("SELECT pg_try_advisory_lock(7310001);")[0][0]:
-            return
+        # Durante un deploy Render tiene acceso per qualche secondo anche il
+        # processo vecchio: aspettiamo che abbia finito invece di rinunciare.
+        conn.run("SELECT pg_advisory_lock(7310001);")
         conn.run("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+        conn.run("CREATE TABLE IF NOT EXISTS vocabolario_info (chiave text PRIMARY KEY, valore bigint NOT NULL);")
+
+        decisioni = conn.run("SELECT COUNT(*) FROM decisioni;")[0][0]
+        esiste = conn.run("SELECT to_regclass('public.vocabolario') IS NOT NULL;")[0][0]
+        fatto = conn.run("SELECT valore FROM vocabolario_info WHERE chiave = 'decisioni';")
+        if esiste and fatto and fatto[0][0] == decisioni:
+            n = conn.run("SELECT COUNT(*) FROM vocabolario;")[0][0]
+            if n > 0:
+                STATO_VOCABOLARIO.update(stato="pronto", parole=n)
+                _scrivi(f"gia' pronto ({n} parole, {decisioni} decisioni): nessun aggiornamento necessario")
+                return
+
+        _scrivi(f"costruzione in corso su {decisioni} decisioni...")
+        conn.run("DROP TABLE IF EXISTS vocabolario_nuovo;")
         conn.run("""
-            CREATE TABLE IF NOT EXISTS vocabolario (
-                parola     text PRIMARY KEY,
-                frequenza  integer NOT NULL
-            );
-        """)
-        conn.run("CREATE INDEX IF NOT EXISTS vocabolario_trgm ON vocabolario USING gin (parola gin_trgm_ops);")
-        # Ricostruzione in un'unica transazione: chi cerca nel frattempo
-        # vede il vocabolario vecchio, mai una tabella vuota.
-        conn.run("START TRANSACTION;")
-        conn.run("TRUNCATE vocabolario;")
-        conn.run("""
-            INSERT INTO vocabolario (parola, frequenza)
-            SELECT parola, COUNT(*)
+            CREATE TABLE vocabolario_nuovo AS
+            SELECT parola, COUNT(*)::integer AS frequenza
             FROM (
                 SELECT regexp_split_to_table(lower(oggetto_ricorso), '[^[:alpha:]]+') AS parola
                 FROM decisioni
@@ -76,11 +92,26 @@ def prepara_vocabolario():
             WHERE length(parola) >= 4
             GROUP BY parola;
         """)
+        conn.run("ALTER TABLE vocabolario_nuovo ADD PRIMARY KEY (parola);")
+        conn.run("CREATE INDEX vocabolario_nuovo_trgm ON vocabolario_nuovo USING gin (parola gin_trgm_ops);")
+
+        # Scambio istantaneo tra vecchio e nuovo
+        conn.run("START TRANSACTION;")
+        conn.run("DROP TABLE IF EXISTS vocabolario;")
+        conn.run("ALTER TABLE vocabolario_nuovo RENAME TO vocabolario;")
+        conn.run("ALTER INDEX vocabolario_nuovo_trgm RENAME TO vocabolario_trgm;")
+        conn.run("""
+            INSERT INTO vocabolario_info (chiave, valore) VALUES ('decisioni', :d)
+            ON CONFLICT (chiave) DO UPDATE SET valore = EXCLUDED.valore;
+        """, d=decisioni)
         conn.run("COMMIT;")
+
         n = conn.run("SELECT COUNT(*) FROM vocabolario;")[0][0]
-        log.warning("Vocabolario pronto: %s parole.", n)
+        STATO_VOCABOLARIO.update(stato="pronto", parole=n)
+        _scrivi(f"pronto: {n} parole")
     except Exception as e:
-        log.warning("Vocabolario non preparato, la correzione degli errori resta disattivata: %s", e)
+        STATO_VOCABOLARIO.update(stato=f"errore: {e}", parole=0)
+        _scrivi(f"NON preparato, la correzione degli errori resta disattivata. Motivo: {e}")
         try:
             if conn:
                 conn.run("ROLLBACK;")
@@ -483,7 +514,13 @@ def massima(req: MassimaRequest):
         return JSONResponse({"errore": str(e)}, status_code=500)
 
 
-@app.get("/")
+@app.get("/stato")
+def stato():
+    """Controllo rapido dal browser: la correzione degli errori e' attiva?"""
+    return JSONResponse({"vocabolario": STATO_VOCABOLARIO})
+
+
+@app.api_route("/", methods=["GET", "HEAD"])
 def home():
     with open("static/index.html", encoding="utf-8") as f:
         return HTMLResponse(f.read())
