@@ -11,13 +11,26 @@ maggior parte). Al suo posto:
   - Un pulsante "Scrivi la massima": incolli tu il testo della sentenza
     (trovata sul portale), il sistema scrive la bozza di massima.
 
-Questo NON genera piu' massime in automatico per ogni risultato - serve
-il testo, che ora va incollato a mano.
+Ricerca (nessun uso di Claude, nessun costo in token):
+  1. Doppioni: le decisioni con oggetto uguale o quasi uguale (contenzioso
+     seriale) vengono raggruppate; ogni risultato porta con se' l'elenco
+     "simili".
+  2. Filtri: sede, sezione, tipo di ricorso, esito, date.
+  3. Sintassi di ricerca: "frase esatta", parola1 or parola2, -parola
+     (websearch_to_tsquery di Postgres).
+  4. Errori di battitura: se non si trova nulla, le parole sconosciute
+     vengono corrette con la parola piu' simile del vocabolario (pg_trgm).
+     Il vocabolario si prepara da solo a ogni avvio dell'app (vedi
+     prepara_vocabolario): non serve eseguire nulla a mano sul database.
 """
 
+import logging
 import os
 import re
+import threading
 import unicodedata
+from contextlib import asynccontextmanager
+from datetime import date
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -26,7 +39,69 @@ import anthropic
 
 from db import get_conn
 
-app = FastAPI()
+log = logging.getLogger("ricerca")
+
+
+# ---------- preparazione automatica del vocabolario (per la correzione degli errori) ----------
+def prepara_vocabolario():
+    """Crea (se manca) e ricostruisce il vocabolario delle parole presenti negli
+    oggetti dei ricorsi. Gira in sottofondo a ogni avvio: la ricerca funziona
+    anche mentre lavora, e se qualcosa va storto la correzione resta
+    semplicemente disattivata."""
+    conn = None
+    try:
+        conn = get_conn()
+        # Un solo processo alla volta, se Render ne avvia piu' d'uno.
+        if not conn.run("SELECT pg_try_advisory_lock(7310001);")[0][0]:
+            return
+        conn.run("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+        conn.run("""
+            CREATE TABLE IF NOT EXISTS vocabolario (
+                parola     text PRIMARY KEY,
+                frequenza  integer NOT NULL
+            );
+        """)
+        conn.run("CREATE INDEX IF NOT EXISTS vocabolario_trgm ON vocabolario USING gin (parola gin_trgm_ops);")
+        # Ricostruzione in un'unica transazione: chi cerca nel frattempo
+        # vede il vocabolario vecchio, mai una tabella vuota.
+        conn.run("START TRANSACTION;")
+        conn.run("TRUNCATE vocabolario;")
+        conn.run("""
+            INSERT INTO vocabolario (parola, frequenza)
+            SELECT parola, COUNT(*)
+            FROM (
+                SELECT regexp_split_to_table(lower(oggetto_ricorso), '[^[:alpha:]]+') AS parola
+                FROM decisioni
+            ) t
+            WHERE length(parola) >= 4
+            GROUP BY parola;
+        """)
+        conn.run("COMMIT;")
+        n = conn.run("SELECT COUNT(*) FROM vocabolario;")[0][0]
+        log.warning("Vocabolario pronto: %s parole.", n)
+    except Exception as e:
+        log.warning("Vocabolario non preparato, la correzione degli errori resta disattivata: %s", e)
+        try:
+            if conn:
+                conn.run("ROLLBACK;")
+        except Exception:
+            pass
+    finally:
+        if conn:
+            try:
+                conn.run("SELECT pg_advisory_unlock_all();")
+                conn.close()
+            except Exception:
+                pass
+
+
+@asynccontextmanager
+async def lifespan(app):
+    threading.Thread(target=prepara_vocabolario, daemon=True).start()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 claude_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 RICERCA_PORTALE_URL = "https://www.giustizia-amministrativa.it/web/guest/dcsnprr"
@@ -38,6 +113,11 @@ MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
         "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
 
 MAX_CHARS = 50000
+
+# Quante righe chiedere al database prima di raggruppare i doppioni.
+CANDIDATI = 300
+MAX_RISULTATI = 50
+MAX_SIMILI = 50
 
 PRETTY_SEDE = {
     "CDS": "Consiglio di Stato",
@@ -73,6 +153,28 @@ PRETTY_SEDE = {
     "CGA-SICILIA": "CGA Sicilia",
 }
 
+# Filtro "tipo di ricorso": condizione SQL sul campo tipo_ricorso.
+TIPI = {
+    "appalti": "tipo_ricorso ILIKE '%rito appalti%'",
+    "accesso": "tipo_ricorso ILIKE '%accesso%'",
+    "silenzio": "tipo_ricorso ILIKE '%silenzio%'",
+    "ottemperanza": "(tipo_ricorso ILIKE '%ottemperanza%' OR tipo_ricorso ILIKE '%inottemp%')",
+}
+
+# Filtro "esito": stessi gruppi usati per colorare l'esito nella pagina.
+_PARZIALE = "(esito ~* 'PARZIAL|PARTE RIGETTA E PARTE ACCOGLIE')"
+ESITI = {
+    "parziale": _PARZIALE,
+    "accoglie": f"(esito ~* '^(ACCOGLI|ACCOLT)' AND NOT {_PARZIALE})",
+    "respinge": f"(esito ~* '^(RESPING|RESPINT|RIGETT)' AND NOT {_PARZIALE})",
+    "nomerito": "(esito ~* 'INAMMISSIB|IMPROCEDIB|IRRICEVIB|ESTINT|CESSATA MATERIA|PERENZ|RINUNC|RINUNZ|DIFETTO DI GIURISDIZIONE|INCOMPETENZ')",
+}
+
+ROMANI = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
+
+COLONNE = """sede, sezione, numero_provvedimento, numero_ricorso, data_pubblicazione,
+             esito, tipo_ricorso, oggetto_ricorso, tipo_provvedimento"""
+
 
 def norm(s: str) -> str:
     s = unicodedata.normalize("NFD", s or "")
@@ -94,6 +196,16 @@ def sez_short(z: str) -> str:
     return "sez. " + ORD.get(v, v if re.match(r"^[IVX]+$", v) else m.group(1).lower())
 
 
+def pretty_sez(z: str) -> str:
+    if (z or "").upper() == "PLENARIA":
+        return "Adunanza plenaria"
+    m = re.match(r"^SEZIONE\s+(.+)$", z or "", re.IGNORECASE)
+    if not m:
+        return z or ""
+    v = m.group(1).upper()
+    return "Sezione " + ORD.get(v, v if re.match(r"^[IVX]+$", v) else m.group(1).lower())
+
+
 def citation(row: dict) -> str:
     court = "Cons. Stato" if row["sede"] == "CDS" else pretty_sede(row["sede"]).replace("TAR", "T.A.R.").replace("TRGA", "T.R.G.A.")
     d = row["data_pubblicazione"]
@@ -102,57 +214,221 @@ def citation(row: dict) -> str:
     return f"{court}, {sez_short(row['sezione'])}, {date_it}, n. {numero}"
 
 
-def search_index(q: str, n: int) -> list[dict]:
-    words = [w for w in re.split(r"\s+", norm(q)) if w and w not in ("n", "nr", "n.", "nr.", "numero")]
-    num_matches = [w for w in words if re.match(r"^\d+/\d{4}$", w)]
-    text_words = [w for w in words if w not in num_matches]
-
-    conn = get_conn()
+def _data(s: str):
     try:
-        if num_matches:
-            numero, anno = num_matches[0].split("/")
-            provv = anno + numero.zfill(5)
-            rows = conn.run("""
-                SELECT sede, sezione, numero_provvedimento, numero_ricorso, data_pubblicazione,
-                       esito, tipo_ricorso, oggetto_ricorso, tipo_provvedimento
-                FROM decisioni
-                WHERE numero_provvedimento = :provv
-                   OR numero_ricorso LIKE :ricorso_pattern
-                ORDER BY data_pubblicazione DESC LIMIT :n;
-            """, provv=provv, ricorso_pattern=f"{anno}%{numero.zfill(5)}", n=n)
+        return date.fromisoformat(s) if s else None
+    except ValueError:
+        return None
+
+
+def filtri_sql(sede="", sezione="", tipo="", esito="", dal="", al="", solo_sede=False):
+    """Restituisce (lista di condizioni SQL, parametri) per i filtri scelti."""
+    cond, par = [], {}
+    if sede:
+        cond.append("sede = :f_sede"); par["f_sede"] = sede
+    if solo_sede:
+        return cond, par
+    if sezione:
+        cond.append("sezione = :f_sez"); par["f_sez"] = sezione
+    if tipo in TIPI:
+        cond.append(TIPI[tipo])
+    if esito in ESITI:
+        cond.append(ESITI[esito])
+    if _data(dal):
+        cond.append("data_pubblicazione >= :f_dal"); par["f_dal"] = _data(dal)
+    if _data(al):
+        cond.append("data_pubblicazione <= :f_al"); par["f_al"] = _data(al)
+    return cond, par
+
+
+def _righe(conn, sql, **par):
+    rows = conn.run(sql, **par)
+    columns = [c["name"] for c in conn.columns]
+    return [dict(zip(columns, r)) for r in rows]
+
+
+def cerca_testo(conn, testo: str, filtri: dict) -> list[dict]:
+    """Ricerca testuale con la sintassi di websearch_to_tsquery:
+    "frase esatta", parola1 or parola2, -parola da escludere."""
+    cond, par = filtri_sql(**filtri)
+    where = " AND ".join(["search_vector @@ websearch_to_tsquery('italian', :q)"] + cond)
+    return _righe(conn, f"""
+        SELECT {COLONNE},
+               ts_rank(search_vector, websearch_to_tsquery('italian', :q)) AS rank
+        FROM decisioni
+        WHERE {where}
+        ORDER BY rank DESC, data_pubblicazione DESC
+        LIMIT :lim;
+    """, q=testo, lim=CANDIDATI, **par)
+
+
+def cerca_numero(conn, numero_anno: str, filtri: dict) -> list[dict]:
+    numero, anno = numero_anno.split("/")
+    provv = anno + numero.zfill(5)
+    cond, par = filtri_sql(solo_sede=True, **{k: v for k, v in filtri.items() if k == "sede"})
+    extra = (" AND " + " AND ".join(cond)) if cond else ""
+    return _righe(conn, f"""
+        SELECT {COLONNE}, 1.0 AS rank
+        FROM decisioni
+        WHERE (numero_provvedimento = :provv OR numero_ricorso LIKE :ricorso_pattern){extra}
+        ORDER BY data_pubblicazione DESC
+        LIMIT :lim;
+    """, provv=provv, ricorso_pattern=f"{anno}%{numero.zfill(5)}", lim=CANDIDATI, **par)
+
+
+# ---------- 4. errori di battitura ----------
+OPERATORI = {"or"}
+
+
+def correggi(conn, testo: str) -> dict:
+    """Per ogni parola che non esiste nel vocabolario cerca la piu' simile.
+    Restituisce {parola_scritta: parola_corretta}. Se la tabella vocabolario
+    non c'e' (migrazione non eseguita) non corregge nulla."""
+    correzioni = {}
+    parole = {p.lower() for p in re.findall(r"[^\W\d_]{4,}", testo)} - OPERATORI
+    try:
+        for p in parole:
+            if conn.run("SELECT 1 FROM vocabolario WHERE parola = :p", p=p):
+                continue
+            r = conn.run("""
+                SELECT parola FROM vocabolario
+                WHERE parola % :p
+                ORDER BY similarity(parola, :p) DESC, frequenza DESC
+                LIMIT 1;
+            """, p=p)
+            if r and r[0][0] != p:
+                correzioni[p] = r[0][0]
+    except Exception:
+        return {}
+    return correzioni
+
+
+def applica(testo: str, correzioni: dict) -> str:
+    for sbagliata, giusta in correzioni.items():
+        testo = re.sub(rf"(?<![^\W\d_]){re.escape(sbagliata)}(?![^\W\d_])", giusta, testo, flags=re.IGNORECASE)
+    return testo
+
+
+# ---------- 1. doppioni: raggruppamento degli oggetti quasi identici ----------
+STOP = set("""della delle dello degli dalla dalle dallo alla alle allo nella nelle nello sulla sulle sullo
+questo questa quale quali sono stato stata essere anche come oltre ogni relativo relativa ricorso ricorsi
+sentenza sentenze appello avverso annullamento riforma consiglio sezione ottemperanza esecuzione giudicato
+parte parti""".split())
+
+
+def _parole_chiave(oggetto: str) -> set:
+    return {w[:6] for w in re.findall(r"[a-z]{4,}", norm(oggetto)) if w not in STOP}
+
+
+def raggruppa(righe: list[dict], soglia: float = 0.6) -> list[dict]:
+    """Raggruppa le decisioni con oggetto uguale o quasi uguale. Il primo della
+    lista (il piu' pertinente) rappresenta il gruppo; gli altri vanno in 'simili'."""
+    gruppi = []
+    for r in righe:
+        chiave = norm(r["oggetto_ricorso"] or "").strip()
+        s = _parole_chiave(r["oggetto_ricorso"] or "")
+        trovato = None
+        for g in gruppi:
+            if chiave and chiave == g["chiave"]:
+                trovato = g
+                break
+            if len(s) >= 4 and len(g["s"]) >= 4:
+                inter = len(s & g["s"])
+                if inter >= 4 and inter / len(s | g["s"]) >= soglia:
+                    trovato = g
+                    break
+        if trovato:
+            trovato["simili"].append(r)
         else:
-            rows = conn.run("""
-                SELECT sede, sezione, numero_provvedimento, numero_ricorso, data_pubblicazione,
-                       esito, tipo_ricorso, oggetto_ricorso, tipo_provvedimento
-                FROM decisioni
-                WHERE search_vector @@ plainto_tsquery('italian', :q)
-                ORDER BY ts_rank(search_vector, plainto_tsquery('italian', :q)) DESC,
-                         data_pubblicazione DESC
-                LIMIT :n;
-            """, q=" ".join(text_words) or q, n=n)
-        columns = [c["name"] for c in conn.columns]
-        return [dict(zip(columns, row)) for row in rows]
-    finally:
-        conn.close()
+            gruppi.append({"r": r, "s": s, "chiave": chiave, "simili": []})
+    return gruppi
+
+
+def formatta(row: dict) -> dict:
+    numero = int(row["numero_provvedimento"][4:]) if row["numero_provvedimento"] else None
+    anno = row["numero_provvedimento"][:4] if row["numero_provvedimento"] else None
+    return {
+        "citazione": citation(row),
+        "oggetto": (row["oggetto_ricorso"] or "").capitalize(),
+        "esito": (row["esito"] or "").capitalize(),
+        "tipo_ricorso": (row["tipo_ricorso"] or "").capitalize(),
+        "sede_da_cercare": pretty_sede(row["sede"]),
+        "numero_da_cercare": f"{numero}/{anno}" if numero else None,
+        "ricerca_portale_url": RICERCA_PORTALE_URL,
+    }
 
 
 @app.get("/search")
-def search(q: str, n: int = 5):
-    matches = search_index(q, n)
+def search(q: str, n: int = 5, sede: str = "", sezione: str = "", tipo: str = "",
+           esito: str = "", dal: str = "", al: str = ""):
+    n = max(1, min(n, MAX_RISULTATI))
+    filtri = dict(sede=sede, sezione=sezione, tipo=tipo, esito=esito, dal=dal, al=al)
+
+    # Numeri come 523/2026 cercano la decisione o il ricorso; il resto e' testo.
+    num_matches = re.findall(r"\b\d+/\d{4}\b", q)
+    testo = re.sub(r"\b\d+/\d{4}\b", " ", q)
+    testo = re.sub(r"(?i)(?<!\w)(n|nr|n\.|nr\.|n°|numero)(?!\w)", " ", testo)
+    testo = re.sub(r"\s+", " ", testo).strip()
+
+    correzioni = {}
+    conn = get_conn()
+    try:
+        if num_matches:
+            righe = cerca_numero(conn, num_matches[0], filtri)
+        elif testo:
+            righe = cerca_testo(conn, testo, filtri)
+            if not righe:
+                correzioni = correggi(conn, testo)
+                if correzioni:
+                    testo = applica(testo, correzioni)
+                    righe = cerca_testo(conn, testo, filtri)
+        else:
+            righe = []
+    finally:
+        conn.close()
+
+    gruppi = raggruppa(righe)[:n]
     risultati = []
-    for row in matches:
-        numero = int(row["numero_provvedimento"][4:]) if row["numero_provvedimento"] else None
-        anno = row["numero_provvedimento"][:4] if row["numero_provvedimento"] else None
-        risultati.append({
-            "citazione": citation(row),
-            "oggetto": (row["oggetto_ricorso"] or "").capitalize(),
-            "esito": (row["esito"] or "").capitalize(),
-            "tipo_ricorso": (row["tipo_ricorso"] or "").capitalize(),
-            "sede_da_cercare": pretty_sede(row["sede"]),
-            "numero_da_cercare": f"{numero}/{anno}" if numero else None,
-            "ricerca_portale_url": RICERCA_PORTALE_URL,
-        })
-    return JSONResponse({"query": q, "risultati": risultati})
+    for g in gruppi:
+        item = formatta(g["r"])
+        simili = sorted(g["simili"], key=lambda r: r["data_pubblicazione"] or date.min, reverse=True)
+        item["simili"] = [formatta(r) for r in simili[:MAX_SIMILI]]
+        item["simili_totali"] = len(simili)
+        risultati.append(item)
+
+    return JSONResponse({
+        "query": q,
+        "query_usata": testo if correzioni else None,
+        "correzioni": correzioni,
+        "candidati": len(righe),
+        "candidati_limite": len(righe) >= CANDIDATI,
+        "risultati": risultati,
+    })
+
+
+@app.get("/filtri")
+def filtri(sede: str = ""):
+    """Valori per i menu dei filtri: sedi presenti nel database e sezioni della sede scelta."""
+    conn = get_conn()
+    try:
+        sedi = conn.run("SELECT sede, COUNT(*) FROM decisioni GROUP BY sede ORDER BY COUNT(*) DESC;")
+        if sede:
+            sez = conn.run("SELECT sezione, COUNT(*) FROM decisioni WHERE sede = :s AND sezione IS NOT NULL GROUP BY sezione;", s=sede)
+        else:
+            sez = conn.run("SELECT sezione, COUNT(*) FROM decisioni WHERE sezione IS NOT NULL GROUP BY sezione;")
+    finally:
+        conn.close()
+
+    def ordine(z):
+        m = re.match(r"^SEZIONE\s+(.+)$", z or "", re.IGNORECASE)
+        v = m.group(1).upper() if m else ""
+        v = ORD.get(v, v)
+        return (0 if z.upper() == "PLENARIA" else 1, ROMANI.get(v, 99), z)
+
+    return JSONResponse({
+        "sedi": [{"valore": s, "etichetta": pretty_sede(s), "n": c} for s, c in sedi],
+        "sezioni": [{"valore": z, "etichetta": pretty_sez(z), "n": c} for z, c in sorted(sez, key=lambda x: ordine(x[0]))],
+    })
 
 
 class MassimaRequest(BaseModel):
