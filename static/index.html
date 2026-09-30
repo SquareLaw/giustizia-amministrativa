@@ -57,6 +57,24 @@
   .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 10px 2px 0; font-size: .875rem; color: var(--muted); }
   .opts select { padding: 4px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; font-size: .875rem; }
 
+  /* Filtri */
+  .filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+  .ftoggle { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-weight: 500; font-size: .9rem; }
+  .ftoggle .badge { min-width: 1.5em; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: .75rem; text-align: center; }
+  .ftoggle .badge:empty { display: none; }
+  .achip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; background: var(--accent-soft); color: var(--accent-ink); border: 0; border-radius: 999px; font-size: .85rem; }
+  .achip span { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; }
+  .achip:hover span { background: var(--accent); color: var(--on-accent); }
+  .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 14px; margin-top: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  .f { display: flex; flex-direction: column; gap: 5px; font-size: .8125rem; color: var(--muted); font-weight: 500; }
+  .f select, .f input { width: 100%; padding: 8px 10px; background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; font-size: .9rem; font-weight: 400; }
+  details.syntax { margin-top: 10px; font-size: .875rem; color: var(--muted); }
+  details.syntax summary { cursor: pointer; color: var(--accent-ink); width: fit-content; }
+  details.syntax ul { margin: 8px 0 0; padding-left: 1.1em; }
+  details.syntax li { margin: 4px 0; }
+  details.syntax code { font-family: var(--sans); font-weight: 600; color: var(--ink); background: var(--sunk); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .corr { margin: 14px 0 0; padding: 10px 14px; background: var(--accent-soft); border-radius: 8px; font-size: .9rem; }
+
   /* Stato */
   #status { margin: 26px 0 0; padding-bottom: 12px; border-bottom: 2px solid var(--ink); font-family: var(--serif); font-weight: 600; font-size: 1.2rem; min-height: 1.5em; }
   #status:empty { border-bottom: 0; padding: 0; }
@@ -93,7 +111,7 @@
             border: 1px solid var(--line); border-radius: 8px; font-size: .875rem; font-weight: 500; }
   .simbtn .car { display: inline-block; transition: transform .15s ease; }
   .simbtn[aria-expanded="true"] .car { transform: rotate(90deg); }
-  .simlist { list-style: none; margin: 10px 0 0; padding: 4px 0 4px 16px; border-left: 3px solid var(--accent-soft); display: grid; gap: 10px; }
+  .simlist { list-style: none; margin: 10px 0 0; max-height: 360px; overflow-y: auto; padding: 4px 0 4px 16px; border-left: 3px solid var(--accent-soft); display: grid; gap: 10px; }
   .simlist li { font-size: .9rem; }
   .simlist .sc { font-family: var(--serif); font-weight: 600; margin-right: 8px; }
   .simlist .row2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 2px; color: var(--muted); }
@@ -140,12 +158,43 @@
     </div>
     <div class="opts">
       <label>Risultati da mostrare
-        <select id="n"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>
+        <select id="n"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option></select>
       </label>
       <span>La ricerca guarda l'oggetto del ricorso, non il testo della sentenza.</span>
     </div>
+    <details class="syntax">
+      <summary>Come scrivere la ricerca</summary>
+      <ul>
+        <li><code>"accordo tra amministrazioni"</code> tra virgolette cerca la frase esatta.</li>
+        <li><code>convenzione or accordo</code> trova l'una o l'altra parola.</li>
+        <li><code>diligenza -dispacciamento</code> con il meno davanti esclude una parola.</li>
+        <li><code>523/2026</code> cerca la decisione o il ricorso con quel numero.</li>
+        <li>Le parole si cercano per radice: «diligenza» trova anche «diligenti». Gli errori di battitura vengono corretti se non si trova nulla.</li>
+      </ul>
+    </details>
+    <div class="filterbar">
+      <button id="ftoggle" class="ftoggle" type="button" aria-expanded="false" aria-controls="filters">Filtri <span id="fbadge" class="badge"></span></button>
+      <div id="achips" class="filterbar" style="margin:0"></div>
+    </div>
+    <div id="filters" class="filters" hidden>
+      <label class="f">Sede <select id="f_sede"><option value="">Tutte le sedi</option></select></label>
+      <label class="f">Sezione <select id="f_sezione"><option value="">Tutte le sezioni</option></select></label>
+      <label class="f">Tipo di ricorso
+        <select id="f_tipo">
+          <option value="">Tutti i tipi</option><option value="appalti">Appalti</option><option value="accesso">Accesso ai documenti</option>
+          <option value="silenzio">Silenzio della PA</option><option value="ottemperanza">Ottemperanza</option>
+        </select></label>
+      <label class="f">Esito
+        <select id="f_esito">
+          <option value="">Qualsiasi esito</option><option value="accoglie">Accoglie</option><option value="respinge">Respinge</option>
+          <option value="parziale">Accoglie in parte</option><option value="nomerito">Senza decisione nel merito</option>
+        </select></label>
+      <label class="f">Pubblicate dal <input id="f_dal" type="date"></label>
+      <label class="f">Pubblicate fino al <input id="f_al" type="date"></label>
+    </div>
   </form>
 
+  <p id="corr" class="corr" hidden></p>
   <p id="status" aria-live="polite"></p>
   <div id="results"></div>
 
@@ -198,22 +247,6 @@ function evidenzia(testo, q) {
   return out + esc(testo.slice(p));
 }
 
-// Raggruppa i risultati con oggetto quasi identico (contenzioso seriale)
-const STOP = new Set('della delle dello degli dalla dalle dallo alla alle allo nella nelle nello sulla sulle sullo questo questa quale quali sono stato stata essere anche come oltre ogni relativo relativa ricorso ricorsi sentenza sentenze appello avverso annullamento riforma consiglio sezione ottemperanza esecuzione giudicato parte parti'.split(' '));
-function parole(o) { return new Set((norm(o).match(/[a-z]{4,}/g) || []).filter(w => !STOP.has(w)).map(w => w.slice(0, 6))); }
-function raggruppa(lista) {
-  const gruppi = [];
-  lista.forEach(r => {
-    const s = parole(r.oggetto);
-    const g = gruppi.find(g => {
-      let inter = 0; s.forEach(x => { if (g.s.has(x)) inter++; });
-      return s.size >= 4 && g.s.size >= 4 && inter >= 4 && inter / (s.size + g.s.size - inter) >= 0.6;
-    });
-    if (g) g.altri.push(r); else gruppi.push({ r, s, altri: [] });
-  });
-  return gruppi;
-}
-
 let toastT;
 function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 2600); }
 function copia(t, msg) {
@@ -221,6 +254,35 @@ function copia(t, msg) {
   if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(ok, () => {}); return; }
   try { const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); } catch (e) {}
 }
+
+// ---------- filtri ----------
+const $ = id => document.getElementById(id);
+const FILTRI = ['sede', 'sezione', 'tipo', 'esito', 'dal', 'al'];
+const ETICHETTA = { dal: 'Dal', al: 'Fino al' };
+function valoreFiltri() { const o = {}; FILTRI.forEach(k => { const v = $('f_' + k).value; if (v) o[k] = v; }); return o; }
+function testoOpzione(k) { const el = $('f_' + k); return el.tagName === 'SELECT' ? el.options[el.selectedIndex].text.replace(/ \(\d[\d.]*\)$/, '') : ETICHETTA[k] + ' ' + new Date(el.value + 'T00:00:00').toLocaleDateString('it-IT'); }
+function mostraFiltri() {
+  const f = valoreFiltri(), chiavi = Object.keys(f);
+  $('fbadge').textContent = chiavi.length || '';
+  $('achips').innerHTML = chiavi.map(k => `<button type="button" class="achip" data-k="${k}" aria-label="Togli il filtro ${esc(testoOpzione(k))}">${esc(testoOpzione(k))} <span aria-hidden="true">×</span></button>`).join('');
+}
+async function caricaOpzioni(sede) {
+  try {
+    const d = await (await fetch('/filtri' + (sede ? '?sede=' + encodeURIComponent(sede) : ''))).json();
+    if (!sede) $('f_sede').innerHTML = '<option value="">Tutte le sedi</option>' + d.sedi.map(s => `<option value="${esc(s.valore)}">${esc(s.etichetta)} (${s.n.toLocaleString('it-IT')})</option>`).join('');
+    $('f_sezione').innerHTML = '<option value="">Tutte le sezioni</option>' + d.sezioni.map(s => `<option value="${esc(s.valore)}">${esc(s.etichetta)} (${s.n.toLocaleString('it-IT')})</option>`).join('');
+  } catch (e) { /* senza menu la ricerca funziona comunque */ }
+}
+$('ftoggle').addEventListener('click', () => { const h = !$('filters').hidden; $('filters').hidden = h; $('ftoggle').setAttribute('aria-expanded', String(!h)); });
+$('f_sede').addEventListener('change', async () => { $('f_sezione').value = ''; await caricaOpzioni($('f_sede').value); mostraFiltri(); if (ultimaRicerca) cerca(); });
+['sezione', 'tipo', 'esito', 'dal', 'al'].forEach(k => $('f_' + k).addEventListener('change', () => { mostraFiltri(); if (ultimaRicerca) cerca(); }));
+$('achips').addEventListener('click', async e => {
+  const b = e.target.closest('.achip'); if (!b) return;
+  const k = b.dataset.k; $('f_' + k).value = '';
+  if (k === 'sede') { $('f_sezione').value = ''; await caricaOpzioni(''); }
+  mostraFiltri(); if (ultimaRicerca) cerca();
+});
+caricaOpzioni('');
 
 // ---------- ricerca ----------
 document.getElementById('form').addEventListener('submit', e => { e.preventDefault(); cerca(); });
@@ -236,11 +298,13 @@ async function cerca() {
   btn.disabled = true;
   status.innerHTML = '<span class="spin" aria-hidden="true"></span>Ricerca in corso...';
   container.innerHTML = '';
+  $('corr').hidden = true;
   RISULTATI.length = 0;
 
   let data;
   try {
-    const resp = await fetch(`/search?q=${encodeURIComponent(q)}&n=${n}`);
+    const params = new URLSearchParams({ q, n, ...valoreFiltri() });
+    const resp = await fetch('/search?' + params.toString());
     if (!resp.ok) throw new Error(resp.status);
     data = await resp.json();
   } catch (e) {
@@ -251,16 +315,27 @@ async function cerca() {
   btn.disabled = false;
 
   const lista = data.risultati || [];
+  const corr = Object.entries(data.correzioni || {});
+  if (corr.length && lista.length) {
+    $('corr').hidden = false;
+    $('corr').innerHTML = 'Nessun risultato per ' + corr.map(([a]) => '«' + esc(a) + '»').join(', ') +
+      '. Ti mostro i risultati per ' + corr.map(([, b]) => '«<b>' + esc(b) + '</b>»').join(', ') + '.';
+  }
   if (!lista.length) {
     status.textContent = '';
-    container.innerHTML = '<p class="empty">Nessuna corrispondenza. Prova con meno parole, con una parola più corta (per esempio «diniego» invece di «diniegato») o con un numero diverso.</p>';
+    const filtriAttivi = Object.keys(valoreFiltri()).length;
+    container.innerHTML = '<p class="empty">Nessuna corrispondenza. Prova con meno parole o con una parola più generica' +
+      (filtriAttivi ? ', oppure togli qualche filtro' : '') + '.</p>';
     return;
   }
-  const gruppi = raggruppa(lista);
+  const totale = lista.reduce((s, r) => s + 1 + (r.simili_totali || 0), 0);
+  const raggruppati = lista.some(r => r.simili_totali);
   status.innerHTML = `${lista.length} ${lista.length === 1 ? 'risultato' : 'risultati'}` +
-    (gruppi.length < lista.length ? `<span class="sub">Raccolti in ${gruppi.length} ${gruppi.length === 1 ? 'gruppo' : 'gruppi'}: i risultati con oggetto quasi identico sono sotto il primo.</span>` : '');
+    (raggruppati ? `<span class="sub">${totale.toLocaleString('it-IT')} decisioni in tutto: quelle con oggetto uguale o quasi uguale sono raccolte sotto il primo risultato del gruppo.</span>` : '') +
+    (data.candidati_limite ? `<span class="sub">La ricerca è molto ampia: aggiungi una parola o un filtro per restringerla.</span>` : '');
 
-  gruppi.forEach(g => container.appendChild(scheda(g, q)));
+  const qEvid = data.query_usata || q;
+  lista.forEach(r => container.appendChild(scheda({ r, altri: r.simili || [], tot: r.simili_totali || 0 }, qEvid)));
 }
 
 function scheda(g, q) {
@@ -297,7 +372,7 @@ function scheda(g, q) {
       </div>
       <div class="massima-out" aria-live="polite"></div>
     </div>
-    ${g.altri.length ? `<button type="button" class="simbtn" aria-expanded="false"><span class="car" aria-hidden="true">›</span>${g.altri.length === 1 ? 'Un altro risultato con oggetto simile' : 'Altri ' + g.altri.length + ' risultati con oggetto simile'}</button><ol class="simlist" hidden>${altri}</ol>` : ''}`;
+    ${g.tot ? `<button type="button" class="simbtn" aria-expanded="false"><span class="car" aria-hidden="true">›</span>${g.tot === 1 ? 'Un\'altra decisione con oggetto simile' : 'Altre ' + g.tot.toLocaleString('it-IT') + ' decisioni con oggetto simile'}</button><ol class="simlist" hidden>${altri}${g.tot > g.altri.length ? `<li class="row2">Ne mostro ${g.altri.length}: restringi la ricerca per vederle tutte.</li>` : ''}</ol>` : ''}`;
   return div;
 }
 
